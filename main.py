@@ -1,5 +1,7 @@
 import logging
 import os
+from app.routers import auth_google
+app.include_router(auth_google.router)
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
