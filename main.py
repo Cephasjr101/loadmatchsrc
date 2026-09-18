@@ -5,8 +5,9 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordRequestForm
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 import firebase_auth
@@ -32,7 +33,6 @@ app.add_middleware(
 Base.metadata.create_all(bind=engine)
 
 STATIC_DIR = Path(os.getenv("STATIC_DIR", "./static"))
-STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -100,29 +100,49 @@ def require_carrier(user):
         raise HTTPException(status_code=403, detail="Carrier account required")
 
 
+# ---------- JSON auth models (frontend contract) ----------
+
+class RegisterBody(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    role: str = "shipper"              # or "carrier" for drivers
+
+
+class LoginBody(BaseModel):
+    email: EmailStr
+    password: str
+
+
 # ---------- auth ----------
 
-@app.post("/auth/register", response_model=schemas.UserOut, status_code=201)
-def register(body: schemas.UserCreate, db: Session = Depends(get_db)):
+@app.post("/auth/register", status_code=201)
+def register(body: RegisterBody, db: Session = Depends(get_db)):
     email = body.email.lower()
     if db.query(models.User).filter(models.User.email == email).first():
         raise HTTPException(status_code=409, detail="Email already registered")
+    role = body.role if body.role in ("shipper", "carrier") else "shipper"
     user = models.User(
         email=email,
         password_hash=security.hash_password(body.password),
-        role=body.role,
-        company_name=body.company_name,
+        role=role,
+        company_name=body.name,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
-    return user
+    return {
+        "access_token": security.create_token(user.id, user.role),
+        "token_type": "bearer",
+        "email": user.email,
+        "name": user.company_name,
+    }
 
 
 @app.post("/auth/login", response_model=schemas.Token)
-def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == form.username.lower()).first()
-    if user is None or not security.verify_password(form.password, user.password_hash):
+def login(body: LoginBody, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == body.email.lower()).first()
+    if user is None or not security.verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     return {"access_token": security.create_token(user.id, user.role), "token_type": "bearer"}
 
